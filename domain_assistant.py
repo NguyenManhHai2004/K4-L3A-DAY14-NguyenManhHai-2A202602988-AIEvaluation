@@ -20,8 +20,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+import httpx
 from dotenv import load_dotenv
-from openai import OpenAI, OpenAIError
+from google import genai
+from google.genai import errors as genai_errors, types as genai_types
 
 load_dotenv(Path(__file__).resolve().with_name(".env"))
 
@@ -242,27 +244,37 @@ class TextGenerator(Protocol):
     def generate(self, prompt: str) -> str: ...
 
 
-class OpenAIGenerator:
+class GoogleGenerator:
     def __init__(self, max_output_tokens: int = 300) -> None:
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        self.model = os.getenv("OPENAI_MODEL", "").strip()
+        api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+        self.model = os.getenv("GOOGLE_MODEL", "").strip()
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is missing from .env")
+            raise RuntimeError("GOOGLE_API_KEY is missing from .env")
         if not self.model:
-            raise RuntimeError("OPENAI_MODEL is missing from .env")
-        self.client = OpenAI(api_key=api_key)
+            raise RuntimeError("GOOGLE_MODEL is missing from .env")
+        self.client = genai.Client(api_key=api_key)
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt: str) -> str:
-        response = self.client.responses.create(
-            model=self.model,
-            input=prompt,
+        config = genai_types.GenerateContentConfig(
             temperature=0,
             max_output_tokens=self.max_output_tokens,
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
         )
-        answer = response.output_text.strip()
+        for attempt in range(6):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model, contents=prompt, config=config
+                )
+                break
+            except (genai_errors.APIError, httpx.TransportError) as exc:
+                retryable = isinstance(exc, httpx.TransportError) or exc.code in (429, 503)
+                if not retryable or attempt == 5:
+                    raise
+                time.sleep(5 * (attempt + 1))
+        answer = (response.text or "").strip()
         if not answer:
-            raise RuntimeError("OpenAI returned an empty answer")
+            raise RuntimeError("Google model returned an empty answer")
         return answer
 
 
@@ -299,7 +311,7 @@ class DomainAssistant:
         return cls(
             corpus_id,
             BM25Retriever(chunks),
-            generator if generator is not None else OpenAIGenerator(),
+            generator if generator is not None else GoogleGenerator(),
             top_k,
         )
 
@@ -508,7 +520,7 @@ def main() -> int:
             json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-    except (OSError, OpenAIError, TypeError, ValueError, RuntimeError) as exc:
+    except (OSError, genai_errors.APIError, TypeError, ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         return 2
     print(f"Generated {len(artifact['answers'])} actual answers: {output}")
