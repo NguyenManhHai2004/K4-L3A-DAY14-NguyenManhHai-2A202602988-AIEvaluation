@@ -259,7 +259,9 @@ class GoogleGenerator:
         config = genai_types.GenerateContentConfig(
             temperature=0,
             max_output_tokens=self.max_output_tokens,
-            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+            thinking_config=genai_types.ThinkingConfig(
+                thinking_level=genai_types.ThinkingLevel.MINIMAL
+            ),
         )
         for attempt in range(6):
             try:
